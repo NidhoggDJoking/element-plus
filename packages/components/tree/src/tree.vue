@@ -1,3 +1,15 @@
+<!--
+  @sfc-doc
+  文件：packages/components/tree/src/tree.vue
+  作用：ElTree 根组件，负责：
+  1) 创建并维护 TreeStore（节点模型、选中/半选、展开状态等核心数据结构）。
+  2) 递归渲染 ElTreeNode（从 root.childNodes 开始）。
+  3) 对外暴露操作方法（getCheckedNodes/setCheckedKeys/filter 等）。
+  4) 处理拖拽（dragState + dropIndicator）与键盘交互（useKeydown）。
+
+  说明：此实现会注入/提供 ROOT_TREE_INJECTION_KEY，供节点组件访问树上下文；
+  同时会提供 formItemContextKey=undefined，避免 Tree 被表单上下文干预。
+-->
 <template>
   <div
     ref="el$"
@@ -10,6 +22,7 @@
     ]"
     role="tree"
   >
+    <!-- 从根节点的 childNodes 开始递归渲染；root 本身是虚拟根，不对应真实业务节点 -->
     <el-tree-node
       v-for="child in root.childNodes"
       :key="getNodeKey(child)"
@@ -21,6 +34,8 @@
       :render-content="renderContent"
       @node-expand="handleNodeExpand"
     />
+
+    <!-- 空态：当所有节点均不可见（例如过滤后）且没有 select 的过滤选项时展示 -->
     <div v-if="isEmpty" :class="ns.e('empty-block')">
       <slot name="empty">
         <span :class="ns.e('empty-text')">
@@ -28,6 +43,8 @@
         </span>
       </slot>
     </div>
+
+    <!-- 拖拽放置指示线：useDragNodeHandler 控制显示与定位 -->
     <div
       v-show="dragState.showDropIndicator"
       ref="dropIndicator$"
@@ -164,8 +181,11 @@ export default defineComponent({
   setup(props, ctx) {
     const { t } = useLocale()
     const ns = useNamespace('tree')
+
+    // 兼容 TreeSelect：在 select 场景下，空态展示需要额外参考 select 的过滤结果
     const selectInfo = inject(selectKey, null)
 
+    // TreeStore：树的核心数据模型（节点结构、展开/勾选状态、懒加载、过滤等）
     const store = ref<TreeStore>(
       new TreeStore({
         key: props.nodeKey,
@@ -184,6 +204,7 @@ export default defineComponent({
       })
     )
 
+    // 初始化：构建 root/childNodes，应用默认展开与默认勾选等配置
     store.value.initialize()
 
     const root = ref<Node>(store.value.root)
@@ -203,6 +224,9 @@ export default defineComponent({
 
     useKeydown({ el$ }, store)
 
+    // 空态判定：
+    // - childNodes 为空/全部不可见（例如过滤后）认为树为空
+    // - 若处于 select 场景且存在过滤选项，则不展示 Tree 的空态（由上层决定展示）
     const isEmpty = computed(() => {
       const { childNodes } = root.value
       const hasFilteredOptions = selectInfo
@@ -254,6 +278,10 @@ export default defineComponent({
       }
     )
 
+    /**
+     * 按关键字过滤节点：依赖 filterNodeMethod 来决定每个节点是否可见
+     * 注意：未传 filterNodeMethod 时调用会直接抛错
+     */
     const filter = (value: FilterValue) => {
       if (!props.filterNodeMethod)
         throw new Error('[Tree] filterNodeMethod is required when filter')
@@ -393,6 +421,7 @@ export default defineComponent({
       store.value.updateChildren(key, data)
     }
 
+    // 向后代节点提供根树上下文：NodeContent/TreeNode 等会依赖该注入读取 props、store、slots 等
     provide(ROOT_TREE_INJECTION_KEY, {
       ctx,
       props,
@@ -402,6 +431,7 @@ export default defineComponent({
       instance: getCurrentInstance(),
     })
 
+    // 避免 Tree 被 FormItem 上下文影响（例如尺寸/禁用态透传造成的耦合）
     provide(formItemContextKey, undefined)
 
     return {

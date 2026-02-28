@@ -1,3 +1,12 @@
+/*
+  文件：packages/components/message/src/message.ts
+  作用：定义 ElMessage 的类型、可选值、默认值、props/emits 以及对外调用签名。
+
+  说明：
+  - messageDefaults：运行时默认配置（创建实例时会被 method.ts 合并与归一化）。
+  - messageProps：Message 组件的 props 定义（供 message.vue 使用）。
+  - MessageFn/Message：对外方法类型（message() 以及 message.success/info 等快捷方法）。
+*/
 import {
   buildProps,
   definePropType,
@@ -36,8 +45,8 @@ export const MESSAGE_DEFAULT_PLACEMENT = 'top'
 
 export type MessageType = typeof messageTypes[number]
 export type MessagePlacement = typeof messagePlacement[number]
-/** @deprecated please use `MessageType` instead */
-export type messageType = MessageType // will be removed in 3.0.0.
+/** @deprecated 请使用 `MessageType`，该别名将在 3.0.0 移除 */
+export type messageType = MessageType
 
 export interface MessageConfigContext {
   max?: number
@@ -49,6 +58,9 @@ export interface MessageConfigContext {
   placement?: string
 }
 
+// Message 的运行时默认值：
+// - method.ts 会以此为基础合并调用参数与全局配置
+// - appendTo 在非浏览器环境下不可用，因此使用 isClient 做保护
 export const messageDefaults = mutable({
   customClass: '',
   dangerouslyUseHTMLString: false,
@@ -70,42 +82,42 @@ export const messageDefaults = mutable({
 
 export const messageProps = buildProps({
   /**
-   * @description custom class name for Message
+   * @description Message 的自定义 class
    */
   customClass: {
     type: String,
     default: messageDefaults.customClass,
   },
   /**
-   * @description whether `message` is treated as HTML string
+   * @description 是否将 message 按 HTML 字符串渲染（存在 XSS 风险，请勿使用不可信输入）
    */
   dangerouslyUseHTMLString: {
     type: Boolean,
     default: messageDefaults.dangerouslyUseHTMLString,
   },
   /**
-   * @description display duration, millisecond. If set to 0, it will not turn off automatically
+   * @description 展示时长（毫秒）；为 0 时不自动关闭
    */
   duration: {
     type: Number,
     default: messageDefaults.duration,
   },
   /**
-   * @description custom icon component, overrides `type`
+   * @description 自定义图标组件（传入后会覆盖 type 默认图标）
    */
   icon: {
     type: iconPropType,
     default: messageDefaults.icon,
   },
   /**
-   * @description message dom id
+   * @description message DOM id（由 method.ts 生成并注入）
    */
   id: {
     type: String,
     default: messageDefaults.id,
   },
   /**
-   * @description message text
+   * @description message 内容：支持字符串 / VNode / 返回 VNode 的函数
    */
   message: {
     type: definePropType<string | VNode | (() => VNode)>([
@@ -116,21 +128,21 @@ export const messageProps = buildProps({
     default: messageDefaults.message,
   },
   /**
-   * @description callback function when closed with the message instance as the parameter
+   * @description 关闭回调（由 method.ts 包装后在关闭流程中触发）
    */
   onClose: {
     type: definePropType<() => void>(Function),
     default: messageDefaults.onClose,
   },
   /**
-   * @description whether to show a close button
+   * @description 是否显示关闭按钮
    */
   showClose: {
     type: Boolean,
     default: messageDefaults.showClose,
   },
   /**
-   * @description message type
+   * @description 消息类型（影响主题色与默认图标）
    */
   type: {
     type: String,
@@ -138,21 +150,21 @@ export const messageProps = buildProps({
     default: messageDefaults.type,
   },
   /**
-   * @description whether message is plain
+   * @description 是否为朴素样式（plain）
    */
   plain: {
     type: Boolean,
     default: messageDefaults.plain,
   },
   /**
-   * @description set the distance to the top of viewport
+   * @description 距离视口顶部/底部的起始偏移（第一个消息使用该值）
    */
   offset: {
     type: Number,
     default: messageDefaults.offset,
   },
   /**
-   * @description message placement position
+   * @description 消息出现位置（placement）
    */
   placement: {
     type: String,
@@ -160,21 +172,21 @@ export const messageProps = buildProps({
     default: messageDefaults.placement,
   },
   /**
-   * @description input box size
+   * @description z-index 增量（最终 zIndex 由 message.vue 内部统一计算）
    */
   zIndex: {
     type: Number,
     default: messageDefaults.zIndex,
   },
   /**
-   * @description merge messages with the same content, type of VNode message is not supported
+   * @description 是否合并相同内容的消息（VNode 类型的 message 不支持合并）
    */
   grouping: {
     type: Boolean,
     default: messageDefaults.grouping,
   },
   /**
-   * @description The number of repetitions, similar to badge, is used as the initial number when used with `grouping`
+   * @description 重复次数（配合 grouping 使用，类似 Badge 的计数展示）
    */
   repeatNum: {
     type: Number,

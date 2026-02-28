@@ -1,3 +1,15 @@
+/*
+  文件：packages/components/message/src/method.ts
+  作用：ElMessage 的对外调用入口（message(options)）与实例创建/分组/关闭控制。
+
+  核心流程：
+  1) normalizeOptions：把多种入参形态统一为 MessageParamsNormalized（补齐默认值、处理 appendTo/placement、合并全局配置）。
+  2) getOrCreatePlacementInstances：按 placement 维度维护实例队列，用于计算堆叠偏移与分组。
+  3) createMessage：创建并挂载 Message 组件，返回包含 handler.close 的上下文对象。
+  4) closeAll/closeAllByPlacement：提供批量关闭能力。
+
+  注意：此文件与 Notification 的实现模式类似（未来可考虑抽象以减少重复）。
+*/
 import { createVNode, isVNode, render } from 'vue'
 import {
   debugWarn,
@@ -34,8 +46,13 @@ import type {
 
 let seed = 1
 
-// TODO: Since Notify.ts is basically the same like this file. So we could do some encapsulation against them to reduce code duplication.
+// TODO：Notify.ts 与此文件实现模式高度相似，可考虑抽象公共创建/队列管理逻辑以减少重复。
 
+/**
+ * 归一化 appendTo：
+ * - 未传时默认挂载到 document.body
+ * - 传入字符串选择器时尝试 querySelector，并在无效时回退到 document.body
+ */
 const normalizeAppendTo = (normalized: MessageOptions) => {
   const appendTo = normalized.appendTo
   if (!appendTo) {
@@ -55,8 +72,14 @@ const normalizeAppendTo = (normalized: MessageOptions) => {
   }
 }
 
+/**
+ * 归一化 placement：
+ * - 优先使用调用方传入的 placement
+ * - 否则尝试读取全局 messageConfig.placement
+ * - 最终兜底为 MESSAGE_DEFAULT_PLACEMENT，并对非法值给出告警后回退
+ */
 const normalizePlacement = (normalized: MessageOptions) => {
-  // if placement is not passed and global has config, use global config
+  // 未显式传 placement 且存在全局配置时，使用全局配置
   if (
     !normalized.placement &&
     isString(messageConfig.placement) &&
@@ -66,11 +89,11 @@ const normalizePlacement = (normalized: MessageOptions) => {
       | MessagePlacement
       | undefined
   }
-  // if placement is not passed and global has no config, use default config
+  // 未显式传 placement 且全局无配置时，使用默认值
   if (!normalized.placement) {
     normalized.placement = MESSAGE_DEFAULT_PLACEMENT
   }
-  // if placement is not valid, use default config
+  // placement 非法时回退到默认值，并给出告警
   if (!messagePlacement.includes(normalized.placement!)) {
     debugWarn(
       'ElMessage',
@@ -80,6 +103,13 @@ const normalizePlacement = (normalized: MessageOptions) => {
   }
 }
 
+/**
+ * 归一化调用参数：
+ * - 支持字符串/VNode/渲染函数等快捷写法（会被包装为 { message }）
+ * - 合并 messageDefaults 与调用方 options
+ * - 应用 appendTo/placement 规则
+ * - 在调用方未显式覆盖时合并全局 messageConfig（grouping/duration/offset/showClose/plain/max）
+ */
 const normalizeOptions = (params?: MessageParams) => {
   const options: MessageOptions =
     !params || isString(params) || isVNode(params) || isFunction(params)
@@ -94,9 +124,9 @@ const normalizeOptions = (params?: MessageParams) => {
   normalizeAppendTo(normalized)
   normalizePlacement(normalized)
 
-  // When grouping is configured globally,
-  // if grouping is manually set when calling message individually and it is not equal to the default value,
-  // the global configuration cannot override the current setting. default => false
+  // 当全局开启 grouping 时：
+  // - 若调用方未显式开启 grouping（默认 false），则允许全局配置覆盖
+  // - 若调用方显式指定 grouping，则以调用方为准
   if (isBoolean(messageConfig.grouping) && !normalized.grouping) {
     normalized.grouping = messageConfig.grouping
   }
@@ -116,6 +146,9 @@ const normalizeOptions = (params?: MessageParams) => {
   return normalized as MessageParamsNormalized
 }
 
+/**
+ * 从实例队列中移除指定 message，并触发其组件关闭流程
+ */
 const closeMessage = (instance: MessageContext) => {
   const placement = instance.props.placement || MESSAGE_DEFAULT_PLACEMENT
   const instances = placementInstances[placement]
@@ -127,6 +160,13 @@ const closeMessage = (instance: MessageContext) => {
   handler.close()
 }
 
+/**
+ * 创建并挂载一个 Message 实例
+ * - 生成唯一 id
+ * - 组装组件 props（封装 onClose/onDestroy）
+ * - createVNode + render 挂载到临时 container，再 append 到 appendTo
+ * - 返回 MessageContext（含 handler.close）供外部控制
+ */
 const createMessage = (
   { appendTo, ...options }: MessageParamsNormalized,
   context?: AppContext | null
@@ -138,19 +178,17 @@ const createMessage = (
 
   const props = {
     ...options,
-    // now the zIndex will be used inside the message.vue component instead of here.
-    // zIndex: nextIndex() + options.zIndex
+    // zIndex 由 message.vue 内部的 useGlobalComponentSettings 统一管理，这里仅透传配置
     id,
+
+    // 关闭回调：先执行用户传入的 onClose，再从队列中移除当前实例
     onClose: () => {
       userOnClose?.()
       closeMessage(instance)
     },
 
-    // clean message element preventing mem leak
+    // 组件销毁后清理挂载点：render(null) 解除 VNode 与 DOM 关联，避免残留引用造成内存增长
     onDestroy: () => {
-      // since the element is destroy, then the VNode should be collected by GC as well
-      // we do not want cause any mem leak because we have returned vm as a reference to users
-      // so that we manually set it to false.
       render(null, container)
     },
   }
@@ -174,8 +212,7 @@ const createMessage = (
   const vm = vnode.component!
 
   const handler: MessageHandler = {
-    // instead of calling the onClose function directly, setting this value so that we can have the full lifecycle
-    // for out component, so that all closing steps will not be skipped.
+    // 通过调用组件暴露的 close() 触发完整的过渡与销毁生命周期
     close: () => {
       vm.exposed!.close()
     },
@@ -192,6 +229,7 @@ const createMessage = (
   return instance
 }
 
+// message 主函数：负责入参归一化、分组复用、数量上限控制、以及创建并入队
 const message: MessageFn &
   Partial<Message> & { _context: AppContext | null } = (
   options = {},
@@ -204,6 +242,7 @@ const message: MessageFn &
     normalized.placement || MESSAGE_DEFAULT_PLACEMENT
   )
 
+  // grouping：相同 message 文本时复用既有实例，仅增加 repeatNum 并同步 type
   if (normalized.grouping && instances.length) {
     const instance = instances.find(
       ({ vnode: vm }) => vm.props?.message === normalized.message
@@ -215,6 +254,7 @@ const message: MessageFn &
     }
   }
 
+  // 最大数量限制：达到上限时不再创建新实例
   if (isNumber(messageConfig.max) && instances.length >= messageConfig.max) {
     return { close: () => undefined }
   }
@@ -232,10 +272,13 @@ messageTypes.forEach((type) => {
   }
 })
 
+/**
+ * 关闭所有 Message（可选按类型过滤）
+ */
 export function closeAll(type?: MessageType): void {
   for (const placement in placementInstances) {
     if (hasOwn(placementInstances, placement)) {
-      // Create a copy of instances to avoid modification during iteration
+      // 复制一份数组，避免迭代过程中 close 导致的队列变更影响遍历
       const instances: MessageContext[] = [...placementInstances[placement]]
       for (const instance of instances) {
         if (!type || type === instance.props.type) {
@@ -246,9 +289,12 @@ export function closeAll(type?: MessageType): void {
   }
 }
 
+/**
+ * 按 placement 关闭该位置上的所有 Message
+ */
 export function closeAllByPlacement(placement: MessagePlacement) {
   if (!placementInstances[placement]) return
-  // Create a copy of instances to avoid modification during iteration
+  // 复制一份数组，避免迭代过程中 close 导致的队列变更影响遍历
   const instances = [...placementInstances[placement]]
   instances.forEach((instance) => instance.handler.close())
 }

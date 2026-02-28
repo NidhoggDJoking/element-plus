@@ -1,3 +1,21 @@
+<!--
+  @sfc-doc
+  文件：packages/components/select/src/select.vue
+  作用：ElSelect 组件主体（输入框/多选标签/下拉面板/选项渲染与交互）。
+
+  模板结构概览：
+  - 外层容器：负责点击外部关闭、hover 状态、以及作为宽度参考（selectRef）。
+  - Tooltip/Popper：承载下拉面板内容（content slot），控制展开/收起与定位。
+  - selection 区：
+    - 单选：显示当前选中 label 或 placeholder。
+    - 多选：渲染 Tag 列表，支持折叠 + Tooltip 展示被折叠的标签。
+    - filterable：在 selection 内嵌入 input，用于输入过滤关键字。
+
+  脚本关键点：
+  1) modelValue 归一化：在 multiple 与非 multiple 间统一值类型，避免外部传入不符合预期导致状态错乱。
+  2) persistent=false 时的 slot 预渲染：为让 useSelect 能收集 option 数据，会“手动遍历一次 slot VNode”，并忽略对应的 Vue 警告。
+  3) provide(selectKey)：向下拉面板/option 传递上下文（states、操作方法等）。
+-->
 <template>
   <div
     ref="selectRef"
@@ -377,20 +395,26 @@ export default defineComponent({
 
   setup(props, { emit, slots }) {
     const instance = getCurrentInstance()!
+
+    // 临时覆盖 warnHandler：
+    // 当 persistent=false 时，下方会“手动执行一次 slots.default()”来预收集 option 数据。
+    // Vue 会提示“Slot 在 render 函数外被调用”的警告；此处明确过滤该条警告，避免影响开发体验。
     instance.appContext.config.warnHandler = (...args) => {
-      // Overrides warnings about slots not being executable outside of a render function.
-      // We call slot below just to simulate data when persist is false, this warning message should be ignored
-      if (!args[0] || args[0].includes('Slot "default" invoked outside of the render function')) {
+      const message = args[0]
+      if (!message || message.includes('Slot "default" invoked outside of the render function')) {
         return
       }
       // eslint-disable-next-line no-console
       console.warn(...args)
     }
+    // 统一 modelValue 的形态：
+    // - multiple=true：始终返回数组（外部误传单值时兜底为 []）
+    // - multiple=false：始终返回单值（外部误传数组时兜底为 undefined）
+    // 这样可避免 useSelect 内部对 selected/optionsMap 的计算出现类型分支膨胀。
     const modelValue = computed(() => {
       const { modelValue: rawModelValue, multiple } = props
       const fallback = multiple ? [] : undefined
-      // When it is array, we check if this is multi-select.
-      // Based on the result we get
+
       if (isArray(rawModelValue)) {
         return multiple ? rawModelValue : fallback
       }
@@ -407,12 +431,19 @@ export default defineComponent({
     const { calculatorRef, inputStyle } = useCalcInputWidth()
     const { getLabel, getValue, getOptions, getDisabled } = useProps(props)
 
+    /**
+     * 将普通对象数据转换为 ElOption 需要的 props 结构
+     */
     const getOptionProps = (option: Record<string, any>) => ({
       label: getLabel(option),
       value: getValue(option),
-      disabled: getDisabled(option)
+      disabled: getDisabled(option),
     })
 
+    /**
+     * 扁平化 TreeSelect 的树形数据
+     * 说明：TreeSelect 的选项数据位于 data.children 中；为了复用 Select 的 option 收集机制，需要把树拍平成一维数组。
+     */
     const flatTreeSelectData = (data: any[]) => {
       return data.reduce((acc, item) => {
         acc.push(item)
@@ -423,26 +454,32 @@ export default defineComponent({
       }, [])
     }
 
+    /**
+     * 手动遍历 slot 渲染结果并把 option 信息注入 useSelect 的内部状态
+     * 触发场景：persistent=false 时，选项不会默认渲染，但仍需要收集 optionsMap/cachedOptions 用于回显与交互。
+     */
     const manuallyRenderSlots = (vnodes: VNode[] | undefined) => {
-      // After option rendering is completed, the useSelect internal state can collect the value of each option.
-      // If the persistent value is false, option will not be rendered by default, so in this case,
-      // manually render and load option data here.
       const children = flattedChildren(vnodes || []) as VNode[]
       children.forEach((item) => {
+        // 这里通过运行时判断识别 ElOption / ElTree（TreeSelect）两类节点
         // @ts-expect-error
-        if (isObject(item) && (item.type.name === 'ElOption' || item.type.name === 'ElTree')) {
+        if (
+          isObject(item) &&
+          (item.type.name === 'ElOption' || item.type.name === 'ElTree')
+        ) {
           // @ts-expect-error
           const _name = item.type.name
           if (_name === 'ElTree') {
-            // tree-select component is a special case.
-            // So we need to handle it separately.
+            // TreeSelect：从树数据中生成等价的“选项条目”并注册
             const treeData = item.props?.data || []
             const flatData = flatTreeSelectData(treeData)
             flatData.forEach((treeItem: any) => {
-              treeItem.currentLabel = treeItem.label || (isObject(treeItem.value) ? '' : treeItem.value)
+              treeItem.currentLabel =
+                treeItem.label || (isObject(treeItem.value) ? '' : treeItem.value)
               API.onOptionCreate(treeItem)
             })
           } else if (_name === 'ElOption') {
+            // 普通 Option：直接复用 props，补齐 currentLabel 后注册
             const obj = { ...item.props } as any
             obj.currentLabel = obj.label || (isObject(obj.value) ? '' : obj.value)
             API.onOptionCreate(obj)
@@ -450,18 +487,24 @@ export default defineComponent({
         }
       })
     }
-    watch(() => {
-      const slotsContent = slots.default?.()
-      return slotsContent
-    }, newSlot => {
-      if (props.persistent) {
-        // If persistent is true, we don't need to manually render slots.
-        return
+    // 监听默认插槽内容变化：
+    // - persistent=true：选项会正常渲染，useSelect 可在渲染过程中自然收集数据，无需额外处理。
+    // - persistent=false：需要在此处手动遍历一次 slot 的 VNode，把选项数据喂给 useSelect。
+    watch(
+      () => {
+        const slotsContent = slots.default?.()
+        return slotsContent
+      },
+      (newSlot) => {
+        if (props.persistent) {
+          return
+        }
+        manuallyRenderSlots(newSlot)
+      },
+      {
+        immediate: true,
       }
-      manuallyRenderSlots(newSlot)
-    }, {
-      immediate: true,
-    })
+    )
 
     provide(
       selectKey,

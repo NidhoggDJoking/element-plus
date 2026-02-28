@@ -1,3 +1,12 @@
+/*
+  文件：packages/components/loading/src/service.ts
+  作用：Loading 服务入口（Loading(options)），负责创建/复用实例并处理样式与挂载。
+
+  关键点：
+  - fullscreen 模式下复用单例，避免重复创建覆盖遮罩。
+  - 通过 addStyle/addClassList 设置定位与锁滚动样式。
+  - 使用 loading-number 计数管理父元素样式回滚，避免多个 loading 叠加时互相干扰。
+*/
 // @ts-nocheck
 import { nextTick } from 'vue'
 import {
@@ -17,11 +26,13 @@ import type { AppContext, CSSProperties } from 'vue'
 
 let fullscreenInstance: LoadingInstance | undefined = undefined
 
+// Loading 服务函数：创建并挂载 Loading 实例
 const Loading = function (options: LoadingOptions = {}): LoadingInstance {
   if (!isClient) return undefined as any
 
   const resolved = resolveOptions(options)
 
+  // fullscreen 复用单例，防止出现多个全屏遮罩叠加
   if (resolved.fullscreen && fullscreenInstance) {
     return fullscreenInstance
   }
@@ -40,16 +51,14 @@ const Loading = function (options: LoadingOptions = {}): LoadingInstance {
   addStyle(resolved, resolved.parent, instance)
   addClassList(resolved, resolved.parent, instance)
 
+  // 记录补充样式方法，供后续子实例调用
   resolved.parent.vLoadingAddClassList = () =>
     addClassList(resolved, resolved.parent, instance)
 
   /**
-   * add loading-number to parent.
-   * because if a fullscreen loading is triggered when somewhere
-   * a v-loading.body was triggered before and it's parent is
-   * document.body which with a margin , the fullscreen loading's
-   * destroySelf function will remove 'el-loading-parent--relative',
-   * and then the position of v-loading.body will be error.
+   * 为父元素添加 loading-number 计数：
+   * 说明：当 body 上已存在 v-loading.body，再触发全屏 loading 时，
+   * 若直接移除 parent 的相对定位类会导致前者定位错误，因此通过计数控制回滚时机。
    */
   let loadingNumber: string | null =
     resolved.parent.getAttribute('loading-number')
@@ -62,7 +71,7 @@ const Loading = function (options: LoadingOptions = {}): LoadingInstance {
 
   resolved.parent.appendChild(instance.$el)
 
-  // after instance render, then modify visible to trigger transition
+  // 在实例完成挂载后再切换 visible，触发过渡动画
   nextTick(() => (instance.visible.value = resolved.visible))
 
   if (resolved.fullscreen) {
@@ -71,6 +80,9 @@ const Loading = function (options: LoadingOptions = {}): LoadingInstance {
   return instance
 }
 
+/**
+ * 解析并补齐 LoadingOptions，得到内部使用的 LoadingOptionsResolved
+ */
 const resolveOptions = (options: LoadingOptions): LoadingOptionsResolved => {
   let target: HTMLElement
   if (isString(options.target)) {
@@ -80,6 +92,7 @@ const resolveOptions = (options: LoadingOptions): LoadingOptionsResolved => {
     target = options.target || document.body
   }
   return {
+    // parent：body 模式下固定为 document.body，否则为 target
     parent: target === document.body || options.body ? document.body : target,
     background: options.background || '',
     svg: options.svg || '',

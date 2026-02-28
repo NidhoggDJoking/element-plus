@@ -1,3 +1,18 @@
+<!--
+  @sfc-doc
+  文件：packages/components/message/src/message.vue
+  作用：单个 Message 实例的 UI 与生命周期。
+
+  交互与生命周期：
+  - 挂载后自动显示，并基于 duration 计时自动关闭（duration=0 不自动关闭）。
+  - 鼠标移入暂停计时，移出恢复计时。
+  - ESC 键关闭（监听 document keydown）。
+  - 关闭流程：visible=false 触发过渡；before-leave 调用 onClose；after-leave emit('destroy') 通知外层销毁。
+
+  堆叠布局：
+  - offset/bottom 由 instance.ts 的队列偏移计算，结合当前组件高度得到。
+  - defineExpose 暴露 bottom 给后续实例计算堆叠位置。
+-->
 <template>
   <transition
     :name="ns.b('fade')"
@@ -36,7 +51,10 @@
         <p v-if="!dangerouslyUseHTMLString" :class="ns.e('content')">
           {{ message }}
         </p>
-        <!-- Caution here, message could've been compromised, never use user's input as message -->
+        <!--
+          安全提示：dangerouslyUseHTMLString=true 时会使用 v-html 渲染。
+          请勿把不可信的用户输入直接作为 message 内容，以避免 XSS 风险。
+        -->
         <p v-else :class="ns.e('content')" v-html="message" />
       </slot>
       <el-icon v-if="showClose" :class="ns.e('closeBtn')" @click.stop="close">
@@ -119,6 +137,9 @@ const customStyle = computed<CSSProperties>(() => ({
   zIndex: currentZIndex.value,
 }))
 
+/**
+ * 启动自动关闭计时器：duration=0 表示不自动关闭
+ */
 function startTimer() {
   if (props.duration === 0) return
   ;({ stop: stopTimer } = useTimeoutFn(() => {
@@ -126,14 +147,22 @@ function startTimer() {
   }, props.duration))
 }
 
+/**
+ * 清理计时器：用于鼠标移入暂停、repeatNum 变更时重置等场景
+ */
 function clearTimer() {
   stopTimer?.()
 }
 
+/**
+ * 关闭消息：
+ * - 设置 visible=false 触发离场过渡
+ * - 若从未进入过过渡（极端情况下），则 nextTick 后直接触发 onClose 并销毁
+ */
 function close() {
   visible.value = false
 
-  // if the message has never started a transition, we can destroy it immediately
+  // 若尚未开始过渡（例如快速创建后立刻关闭），则直接走销毁流程，避免残留 DOM
   nextTick(() => {
     if (!isStartTransition.value) {
       props.onClose?.()
@@ -142,14 +171,17 @@ function close() {
   })
 }
 
+/**
+ * 键盘处理：按下 ESC 关闭消息
+ */
 function keydown({ code }: KeyboardEvent) {
   if (code === EVENT_CODE.esc) {
-    // press esc to close the message
     close()
   }
 }
 
 onMounted(() => {
+  // 挂载后开始计时并提升层级，再显示消息
   startTimer()
   nextZIndex()
   visible.value = true
@@ -158,6 +190,7 @@ onMounted(() => {
 watch(
   () => props.repeatNum,
   () => {
+    // grouping 场景下 repeatNum 增加时，重置计时器以延长展示时间
     clearTimer()
     startTimer()
   }
@@ -166,6 +199,7 @@ watch(
 useEventListener(document, 'keydown', keydown)
 
 useResizeObserver(messageRef, () => {
+  // 监听高度变化（例如内容换行、repeatNum Badge 出现），用于更新堆叠布局 bottom
   height.value = messageRef.value!.getBoundingClientRect().height
 })
 
